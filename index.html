@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Macro·Pulse</title>
 <meta name="theme-color" content="#0A0D12">
+<meta name="robots" content="noindex, nofollow">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="manifest" href="manifest.webmanifest">
@@ -63,6 +64,8 @@ button { cursor: pointer; background: none; border: 0; padding: 0; }
 .top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .brand { font-family: var(--display); font-weight: 600; font-size: 18px; letter-spacing: .06em; text-transform: uppercase; }
 .brand i { font-style: normal; color: var(--accent); }
+.brand { text-align: left; }
+.brand small { display: block; font-family: var(--mono); font-size: 10px; font-weight: 400; letter-spacing: .12em; color: var(--muted); }
 .datenav { display: flex; align-items: center; gap: 4px; }
 .datenav .d { min-width: 0; text-align: center; font-weight: 600; font-size: 14px; padding: 6px 8px; border-radius: 8px; }
 .datenav .d small { display: block; font-family: var(--mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); font-weight: 400; }
@@ -206,7 +209,7 @@ button { cursor: pointer; background: none; border: 0; padding: 0; }
 
 <div class="app">
   <header class="top">
-    <div class="brand">Macro<i>·</i>Pulse</div>
+    <button class="brand" data-act="profiles" aria-label="Profils">Macro<i>·</i>Pulse<small id="pname"></small></button>
     <nav class="datenav" aria-label="Changer de jour">
       <button class="icon" id="prev" data-act="prev" aria-label="Jour précédent">‹</button>
       <button class="d" id="dlabel" data-act="today"></button>
@@ -320,6 +323,7 @@ function saveDay(day) { S.days[day.date] = day; render(); write(() => S.db.doc('
 /* ---------- render ---------- */
 const C1 = 2 * Math.PI * 68, C2 = 2 * Math.PI * 62;
 function renderHeader() {
+  $('#pname').textContent = curName() ? curName() + ' ▾' : '';
   const d = fromKey(S.date), t = today();
   const label = new Intl.DateTimeFormat('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' }).format(d);
   const tag = S.date === t ? "Aujourd'hui" : S.date === shiftKey(t, -1) ? 'Hier' : 'Revenir à aujourd\'hui';
@@ -821,6 +825,92 @@ function voiceGo() {
   u.items = readText(u.text); drawVoice();
 }
 
+/* ---------- profils : accueil, questionnaire, changement de profil ---------- */
+const locked = () => !P.cur;   // tant qu'aucun profil n'existe, on ne peut pas fermer l'accueil
+function openWelcome() {
+  S.ui = { kind: 'welcome' };
+  openSheet(`<div class="panel-h"><h3>Bienvenue sur Macro<i style="font-style:normal;color:var(--accent)">·</i>Pulse</h3></div>
+    <p class="hint" style="font-size:14px">Ton compteur de calories et de macros. Réponds à quelques questions sur toi, ton objectif, ton sport et tes habitudes : l'appli calcule tes besoins.</p>
+    <p class="hint">Tes données restent uniquement sur ce téléphone.</p>
+    <div class="actions"><button class="btn" data-act="onb-start">Créer mon profil</button></div>
+    <button class="link" data-act="pf-import">J'ai déjà un fichier de sauvegarde</button>`);
+}
+const ONB_DEF = () => ({ name: '', sex: 'M', birth: '', height: '', weight: '', goal: 'masse', rate: 0.35, target: '', by: '', neat: 1.45,
+  muscuN: 3, muscuMin: 75, cardioN: 0, cardioMin: 30, otherH: 0, meals: 3, breakfast: 'non', diet: 'Omnivore', avoid: '' });
+const RATES = { masse: [[0.25, 'Douce · +0,25 kg/sem'], [0.35, 'Standard · +0,35'], [0.5, 'Rapide · +0,5']],
+  seche: [[0.25, 'Douce · −0,25 kg/sem'], [0.5, 'Standard · −0,5'], [0.75, 'Rapide · −0,75']] };
+const DIETS = ['Omnivore', 'Végétarien', 'Végan', 'Pescétarien', 'Sans porc', 'Halal'];
+function ageOf(birth) { const b = fromKey(birth), t = new Date(); let y = t.getFullYear() - b.getFullYear(); if (t < new Date(t.getFullYear(), b.getMonth(), b.getDate())) y--; return y; }
+// Besoins : Mifflin-St Jeor × activité du quotidien + sport (dépense nette (MET − 1) × kg × heures) + surplus / déficit
+function calcGoals(a) {
+  const w = num(a.weight) || 70, h = num(a.height) || 175, age = a.birth ? ageOf(a.birth) : 25;
+  const bmr = 10 * w + 6.25 * h - 5 * age + (a.sex === 'F' ? -161 : 5);
+  const metH = (num(a.muscuN) || 0) * (num(a.muscuMin) || 0) / 60 * 4 + (num(a.cardioN) || 0) * (num(a.cardioMin) || 0) / 60 * 9 + (num(a.otherH) || 0) * 6;
+  const sport = metH * w / 7, maint = bmr * (+a.neat || 1.45) + sport;
+  const delta = a.goal === 'masse' ? +a.rate * 1100 : a.goal === 'seche' ? -a.rate * 1100 : 0;   // ≈ 1 100 kcal/jour par kg/semaine
+  const kcal = Math.round((maint + delta) / 50) * 50;
+  const p = Math.round(w * (a.goal === 'seche' ? 2.2 : 2)), f = Math.round(w * (a.goal === 'seche' ? 0.8 : 1));
+  return { bmr, sport, maint, delta, goals: { kcal, p, f, c: Math.max(0, Math.round((kcal - 4 * p - 9 * f) / 4)), fib: Math.min(45, Math.max(25, Math.round(kcal * 14 / 1000))) } };
+}
+function openOnb(edit) { S.ui = { kind: 'onb', step: 0, edit: !!edit, a: edit && S.profile ? { ...ONB_DEF(), ...S.profile } : ONB_DEF() }; drawOnb(); }
+function syncOnb() { if (S.ui.kind !== 'onb') return; panel.querySelectorAll('[data-ok]').forEach(i => { S.ui.a[i.dataset.ok] = i.value; }); }
+const oSeg = (k, opts, a) => `<div class="seg">${opts.map(([v, l]) => `<button class="${String(a[k]) === String(v) ? 'on' : ''}" data-act="onb-set" data-k="${k}" data-v="${v}">${l}</button>`).join('')}</div>`;
+const oIn = (k, label, a, type, ph) => `<div class="field"><label for="o-${k}">${label}</label><input class="in" id="o-${k}" data-ok="${k}" ${type === 'date' ? 'type="date"' : type === 'text' ? 'autocomplete="off"' : 'inputmode="decimal"'} value="${esc(a[k] ?? '')}" placeholder="${ph || ''}"></div>`;
+const oLbl = t => `<label class="lbl" style="display:block;margin-bottom:-6px">${t}</label>`;
+function drawOnb() {
+  const u = S.ui, a = u.a, n = 5;
+  const titles = ['Toi', 'Ton objectif', 'Ton sport', 'Tes habitudes', 'Tes objectifs'];
+  let body = '';
+  if (u.step === 0) body = `${oIn('name', 'Prénom', a, 'text', 'ex. Adam')}${oLbl('Sexe')}${oSeg('sex', [['M', 'Homme'], ['F', 'Femme']], a)}
+    ${oIn('birth', 'Date de naissance', a, 'date')}<div class="grid2">${oIn('height', 'Taille (cm)', a, 'n', 'ex. 185')}${oIn('weight', 'Poids actuel (kg)', a, 'n', 'ex. 68,5')}</div>`;
+  if (u.step === 1) body = `${oSeg('goal', [['masse', 'Prise de masse'], ['maintien', 'Maintien'], ['seche', 'Sèche']], a)}
+    ${RATES[a.goal] ? oLbl('Rythme') + oSeg('rate', RATES[a.goal], a) : ''}
+    <div class="grid2">${oIn('target', 'Poids visé (kg)', a, 'n', 'facultatif')}${oIn('by', 'Pour le', a, 'date')}</div>
+    <p class="hint">En prise de masse, +0,25 à +0,35 kg par semaine limite la prise de gras.</p>`;
+  if (u.step === 2) body = `${oLbl('Au quotidien, hors sport')}${oSeg('neat', [[1.3, 'Assis'], [1.45, 'Debout / marche'], [1.6, 'Physique']], a)}
+    <div class="grid2">${oIn('muscuN', 'Muscu (séances / sem)', a)}${oIn('muscuMin', 'Durée (min)', a)}</div>
+    <div class="grid2">${oIn('cardioN', 'Course / cardio (séances / sem)', a)}${oIn('cardioMin', 'Durée (min)', a)}</div>
+    ${oIn('otherH', 'Autres sports (heures / sem)', a, 'n', 'boxe, foot, basket…')}`;
+  if (u.step === 3) body = `${oLbl('Repas par jour')}${oSeg('meals', [[2, '2'], [3, '3'], [4, '4'], [5, '5 et +']], a)}
+    ${oLbl('Petit-déjeuner identique chaque jour ?')}${oSeg('breakfast', [['oui', 'Oui'], ['non', 'Non']], a)}
+    <div class="field"><label for="o-diet">Alimentation</label><select class="in" id="o-diet" data-ok="diet">${DIETS.map(d => `<option ${a.diet === d ? 'selected' : ''}>${d}</option>`).join('')}</select></div>
+    ${oIn('avoid', 'Aliments évités / allergies', a, 'text', 'facultatif')}
+    ${a.breakfast === 'oui' ? '<p class="hint">Après la création, tu enregistreras ton petit-déjeuner une fois : il sera compté tout seul chaque jour.</p>' : ''}`;
+  if (u.step === 4) { const r = calcGoals(a), g = r.goals, s = x => nf0.format(Math.round(x));
+    body = `<p class="hint" style="font-size:13.5px">Métabolisme de base ≈ <b>${s(r.bmr)} kcal</b> · sport ≈ <b>${s(r.sport)} kcal/jour</b> → maintien ≈ <b>${s(r.maint)} kcal</b>.
+      ${r.delta ? `Objectif ${r.delta > 0 ? 'prise de masse' : 'sèche'} : <b>${r.delta > 0 ? '+' : '−'}${s(Math.abs(r.delta))} kcal</b> par jour.` : 'Objectif maintien.'}</p>
+      <div class="field"><label for="og-kcal">Calories / jour</label><input class="in" id="og-kcal" inputmode="decimal" value="${g.kcal}"></div>
+      <div class="grid2" style="grid-template-columns:repeat(4,minmax(0,1fr))">
+        <div class="field"><label for="og-p">Prot. g</label><input class="in" id="og-p" inputmode="decimal" value="${g.p}"></div>
+        <div class="field"><label for="og-c">Gluc. g</label><input class="in" id="og-c" inputmode="decimal" value="${g.c}"></div>
+        <div class="field"><label for="og-f">Lip. g</label><input class="in" id="og-f" inputmode="decimal" value="${g.f}"></div>
+        <div class="field"><label for="og-fib">Fib. g</label><input class="in" id="og-fib" inputmode="decimal" value="${g.fib}"></div></div>
+      <p class="hint">Protéines ${a.goal === 'seche' ? '2,2' : '2'} g/kg, lipides ${a.goal === 'seche' ? '0,8' : '1'} g/kg, glucides = le reste. Tu peux tout ajuster, maintenant ou plus tard dans « Objectifs ».</p>`; }
+  openSheet(`<div class="panel-h"><h3>${titles[u.step]}</h3>${locked() ? '' : '<button class="icon" data-act="close" aria-label="Fermer">✕</button>'}</div>
+    <div class="lbl">Étape ${u.step + 1} / ${n}</div>${body}
+    <div class="actions">${u.step ? '<button class="btn sec2" data-act="onb-back">Retour</button>' : ''}
+      <button class="btn" data-act="${u.step < n - 1 ? 'onb-next' : 'onb-ok'}">${u.step < n - 1 ? 'Suivant' : u.edit ? 'Enregistrer' : 'Créer mon profil'}</button></div>`);
+}
+function onbCheck() {
+  const a = S.ui.a, h = num(a.height), w = num(a.weight);
+  if (S.ui.step === 0) {
+    if (!String(a.name).trim()) return 'Indique ton prénom.';
+    if (!a.birth || ageOf(a.birth) < 12 || ageOf(a.birth) > 100) return 'Indique ta date de naissance.';
+    if (!h || h < 120 || h > 230) return 'Taille en centimètres, ex. 185.';
+    if (!w || w < 30 || w > 250) return 'Poids en kilos, ex. 68,5.';
+  }
+  return '';
+}
+function openProfiles() {
+  S.ui = { kind: 'profiles' }; const pr = S.profile;
+  openSheet(`${head('Profils')}
+    <div class="list">${P.list.map(x => `<button class="row" style="width:100%" data-act="pf-go" data-id="${esc(x.id)}"><span class="row-main"><span class="nm">${esc(x.name)}</span></span>${x.id === P.cur ? '<span class="tag">actif</span>' : ''}</button>`).join('')}
+      <button class="addrow" data-act="onb-start">＋ Nouveau profil</button></div>
+    ${pr ? `<p class="hint">${esc(pr.diet || '')} · ${esc(pr.meals)} repas / jour${pr.avoid ? ' · évite : ' + esc(pr.avoid) : ''}</p>` : ''}
+    <div class="actions"><button class="btn sec2" data-act="onb-edit">Modifier mon questionnaire</button><button class="btn danger" data-act="pf-del">Supprimer ce profil</button></div>
+    <p class="hint">Chaque profil a ses propres repas, objectifs et pesées, rangés uniquement sur cet appareil.</p>`);
+}
+
 /* routine & recipe form */
 function openRoutine(id, coll = 'routine', preset) {
   const r = id ? S[coll][id] : null;
@@ -860,7 +950,7 @@ function routinePreview() {
 
 /* ---------- events ---------- */
 document.addEventListener('click', ev => {
-  const b = ev.target.closest('[data-act]'); if (!b) { if (ev.target.id === 'sheet') closeSheet(); return; }
+  const b = ev.target.closest('[data-act]'); if (!b) { if (ev.target.id === 'sheet' && !locked()) closeSheet(); return; }
   const a = b.dataset.act, id = b.dataset.id;
   const needW = ['r-inc','r-dec','add','e-edit','r-new','r-edit','goals','food-new','add-ok','e-ok','e-del','food-ok','food-del','goals-ok','r-ok','r-del','rc-new','rc-edit','save-recipe'];
   if (needW.includes(a) && !canWrite()) { toast(S.mode === 'loading' ? 'Un instant, synchronisation…' : 'Enregistrement indisponible ici.'); return; }
@@ -868,7 +958,7 @@ document.addEventListener('click', ev => {
     case 'prev': S.date = shiftKey(S.date, -1); render(); break;
     case 'next': if (S.date < today()) { S.date = shiftKey(S.date, 1); render(); } break;
     case 'today': S.date = today(); render(); break;
-    case 'close': closeSheet(); break;
+    case 'close': if (!locked()) closeSheet(); break;
     case 'r-inc': case 'r-dec': {
       const r = S.routine[id], day = cloneDay(S.date);
       day.routine[id] = Math.max(0, countOf(id, r, day) + (a === 'r-inc' ? 1 : -1)); saveDay(day); break; }
@@ -945,6 +1035,47 @@ document.addEventListener('click', ev => {
       const g = { kcal: num($('#gk').value) || 0, p: num($('#gp').value) || 0, c: num($('#gc').value) || 0, f: num($('#gf').value) || 0, fib: num($('#gfib').value) || 0 };
       const wt = { target: num($('#wt').value), by: $('#wby').value || null };
       S.goals = g; S.wt = { ...S.wt, ...wt }; write(() => S.db.doc('app/settings').set({ goals: g, wt })); closeSheet(); render(); toast('Objectifs enregistrés'); break; }
+    case 'profiles': openProfiles(); break;
+    case 'onb-start': openOnb(false); break;
+    case 'onb-edit': openOnb(true); break;
+    case 'onb-set': {
+      syncOnb(); const a = S.ui.a; a[b.dataset.k] = b.dataset.v;
+      if (b.dataset.k === 'goal') a.rate = a.goal === 'masse' ? 0.35 : a.goal === 'seche' ? 0.5 : 0;
+      drawOnb(); break; }
+    case 'onb-back': syncOnb(); S.ui.step--; drawOnb(); break;
+    case 'onb-next': { syncOnb(); const err = onbCheck(); if (err) { toast(err); break; } S.ui.step++; drawOnb(); break; }
+    case 'onb-ok': {
+      syncOnb(); const u = S.ui, a = u.a, name = String(a.name).trim();
+      const g = { kcal: num($('#og-kcal').value) || 0, p: num($('#og-p').value) || 0, c: num($('#og-c').value) || 0, f: num($('#og-f').value) || 0, fib: num($('#og-fib').value) || 0 };
+      if (!g.kcal) { toast('Indique un objectif de calories.'); break; }
+      const prof = { ...a, name, height: num(a.height), weight: num(a.weight), target: num(a.target), rate: +a.rate, neat: +a.neat, meals: +a.meals };
+      const wt = { target: num(a.target), by: a.by || null };
+      if (u.edit) {
+        S.profile = prof; S.goals = g; S.wt = { ...S.wt, ...wt };
+        P.list.find(x => x.id === P.cur).name = name; savePK(); persist(); closeSheet(); render(); toast('Profil mis à jour'); break;
+      }
+      const d = today();
+      addProfile(name, { profile: prof, goals: g, wt, days: { [d]: { date: d, weight: num(a.weight), routine: {}, entries: [] } } });
+      closeSheet(); render();
+      if (a.breakfast === 'oui') { openRoutine(); toast('Enregistre ton petit-déjeuner : il sera compté chaque jour.'); }
+      else toast(`Bienvenue ${name} !`);
+      break; }
+    case 'pf-go': openProfileId(b.dataset.id); closeSheet(); toast(`Profil : ${curName()}`); break;
+    case 'pf-del': {
+      if (!b.classList.contains('armed')) { b.classList.add('armed'); b.textContent = 'Confirmer'; toast(`Supprime tous les repas et pesées de ${curName()} sur cet appareil.`); break; }
+      try { localStorage.removeItem(dataKey(P.cur)); } catch {}
+      P.list = P.list.filter(x => x.id !== P.cur); P.cur = null; savePK();
+      if (P.list.length) { openProfileId(P.list[0].id); closeSheet(); toast(`Profil : ${curName()}`); }
+      else { load(null); render(); openWelcome(); }
+      break; }
+    case 'pf-import': {
+      const i = document.createElement('input'); i.type = 'file'; i.accept = '.json,application/json';
+      i.onchange = async () => {
+        try { const d = JSON.parse(await i.files[0].text()); if (!d.foods || !d.days) throw 0;
+          addProfile((d.profile && d.profile.name) || 'Mon profil', d); closeSheet(); render(); toast(`Bienvenue ${curName()} !`); }
+        catch { toast('Fichier invalide'); }
+      };
+      i.click(); break; }
     case 'voice': openVoice(); break;
     case 'v-meal': syncVoice(); S.ui.meal = b.dataset.meal; drawVoice(); break;
     case 'v-go': voiceGo(); break;
@@ -1032,7 +1163,7 @@ document.addEventListener('change', ev => {
   if (ev.target.dataset.vs != null) { syncVoice(); const it = S.ui.items[+ev.target.dataset.vs]; if (!it.touched) it.g = gramsFor(it); drawVoice(); }
 });
 document.addEventListener('keydown', ev => {
-  if (ev.key === 'Escape' && !$('#sheet').hidden) closeSheet();
+  if (ev.key === 'Escape' && !$('#sheet').hidden && !locked()) closeSheet();
   if (ev.key === 'Enter' && ev.target.id === 'g') panel.querySelector('[data-act="add-ok"],[data-act="e-ok"]')?.click();
   if (ev.key === 'Enter' && ev.target.id === 'w-in') ev.target.blur();
 });
@@ -1044,54 +1175,34 @@ $('#w-in').addEventListener('change', ev => {
 });
 
 /* ---------- data ---------- */
-/* Tout est rangé dans le navigateur (localStorage), dans une seule « boîte » nommée KEY.
-   Le reste du code appelle S.db.doc(...).set() comme avant : ici, ça enregistre simplement tout l'état. */
-const KEY = 'macro-pulse-v1';
-const SEED = {
-  goals: { kcal: 3200, p: 140, c: 470, f: 85, fib: 35 }, wt: { target: 78, by: '2027-07-01' },
-  foods: {
-    // valeurs CIQUAL 2020 (sauf Nutella : étiquette ; whey : moyenne marché)
-    avoine: { name: "Flocons d'avoine", brand: 'CIQUAL', kcal: 367, p: 13.3, c: 57.9, f: 6.5, fib: 10.2 },
-    banane: { name: 'Banane', brand: 'CIQUAL', kcal: 90, p: 1.1, c: 19.7, f: 0, fib: 2.7 },
-    'beurre-cacahuete': { name: 'Beurre de cacahuète', brand: 'CIQUAL', kcal: 636, p: 22.2, c: 16.1, f: 52.5, fib: 5 },
-    'fromage-blanc': { name: 'Fromage blanc 0 %', brand: 'CIQUAL', kcal: 49, p: 8, c: 3.9, f: 0, fib: 0 },
-    'fruits-rouges': { name: 'Fruits rouges', brand: 'CIQUAL', kcal: 49, p: 1.1, c: 7.9, f: 0.3, fib: 5.3 },
-    'huile-olive': { name: "Huile d'olive", brand: 'CIQUAL', kcal: 900, p: 0, c: 0, f: 99.9, fib: 0 },
-    'lait-demi': { name: 'Lait demi-écrémé', brand: 'CIQUAL', kcal: 47, p: 3.4, c: 4.8, f: 1.6, fib: 0 },
-    muesli: { name: 'Muesli floconneux', brand: 'CIQUAL', kcal: 382, p: 10.6, c: 68.5, f: 4.8, fib: 11.4 },
-    nutella: { name: 'Nutella', brand: 'Ferrero', ns: 'E', kcal: 539, p: 6.3, c: 57.5, f: 30.9, fib: 3.2 },
-    oeuf: { name: 'Œuf entier', brand: 'CIQUAL', kcal: 140, p: 12.7, c: 0.3, f: 9.8, fib: 0 },
-    'pain-mie': { name: 'Pain de mie blanc', brand: 'CIQUAL', kcal: 278, p: 7.1, c: 52.3, f: 3.6, fib: 1.8 },
-    'pates-cuites': { name: 'Pâtes cuites', brand: 'CIQUAL', kcal: 126, p: 4, c: 25, f: 0.6, fib: 1.9 },
-    pdt: { name: "Pomme de terre cuite à l'eau", brand: 'CIQUAL', kcal: 80, p: 1.8, c: 16.7, f: 0.3, fib: 1.8 },
-    poulet: { name: 'Filet de poulet poêlé', brand: 'CIQUAL', kcal: 141, p: 30.1, c: 0, f: 2, fib: 0 },
-    'riz-cuit': { name: 'Riz blanc cuit', brand: 'CIQUAL', kcal: 145, p: 2.9, c: 31.8, f: 0.4, fib: 0.8 },
-    'steak-5': { name: 'Steak haché 5 % (cru)', brand: 'CIQUAL', kcal: 130, p: 21.9, c: 0.3, f: 4.6, fib: 0 },
-    thon: { name: 'Thon au naturel', brand: 'CIQUAL', kcal: 111, p: 26.8, c: 0, f: 0.4, fib: 0 },
-    whey: { name: 'Whey (poudre, moyenne)', kcal: 380, p: 78, c: 6, f: 6 }
-  },
-  routine: {
-    shaker: { name: 'Shaker du matin', count: 1, start: '2026-10-30', end: null,
-      items: [{ food: 'oeuf', g: 110 }, { food: 'muesli', g: 100 }, { food: 'fruits-rouges', g: 100 }, { food: 'lait-demi', g: 250 }, { food: 'whey', g: 30 }, { food: 'banane', g: 95 }] },
-    tartine: { name: 'Tartine beurre de cacahuète + Nutella', count: 2, start: '2026-10-30', end: null,
-      items: [{ food: 'pain-mie', g: 27 }, { food: 'beurre-cacahuete', g: 8 }, { food: 'nutella', g: 8 }] }
-  },
-  recipes: {},
-  days: {}
-};
-const snapshot = () => ({ goals: S.goals, wt: S.wt, foods: S.foods, routine: S.routine, recipes: S.recipes, days: S.days });
-function load(data) { for (const k of ['goals','wt','foods','routine','recipes','days']) if (data[k]) S[k] = data[k]; S.goals.fib ??= 35; }
-function persist() { try { localStorage.setItem(KEY, JSON.stringify(snapshot())); } catch (e) { throw { code: 'quota_exceeded' }; } }
+/* Profils sur l'appareil : chaque profil a sa propre « boîte » dans le navigateur (localStorage),
+   la liste des profils est dans PKEY. Le reste du code appelle S.db.doc(...).set() : ici, ça enregistre
+   simplement tout le profil courant. Rien ne quitte l'appareil. */
+const PKEY = 'macro-pulse-profiles', OLDKEY = 'macro-pulse-v1';
+const dataKey = id => 'macro-pulse-p-' + id;
+const FRESH = () => ({ profile: null, goals: { kcal: 2500, p: 120, c: 300, f: 70, fib: 30 }, wt: { target: null, by: null }, foods: {}, routine: {}, recipes: {}, days: {} });
+let P = { list: [], cur: null };
+const savePK = () => { try { localStorage.setItem(PKEY, JSON.stringify(P)); } catch {} };
+const curName = () => (P.list.find(x => x.id === P.cur) || {}).name || '';
+const snapshot = () => ({ profile: S.profile, goals: S.goals, wt: S.wt, foods: S.foods, routine: S.routine, recipes: S.recipes, days: S.days });
+function load(data) { Object.assign(S, FRESH()); for (const k of Object.keys(FRESH())) if (data && data[k]) S[k] = data[k]; S.goals.fib ??= 35; }
+function persist() { if (!P.cur) return; try { localStorage.setItem(dataKey(P.cur), JSON.stringify(snapshot())); } catch (e) { throw { code: 'quota_exceeded' }; } }
 const newId = () => Math.random().toString(36).slice(2, 10);
 const localDb = {
   doc: path => ({ id: path.split('/')[1], set: async () => persist(), delete: async () => persist() }),
   collection: c => ({ doc: () => localDb.doc(c + '/' + newId()) })
 };
-let saved = null; try { saved = JSON.parse(localStorage.getItem(KEY)); } catch {}
-load(saved || SEED);
+function openProfileId(id) { let d = null; try { d = JSON.parse(localStorage.getItem(dataKey(id))); } catch {} P.cur = id; savePK(); load(d); S.date = today(); render(); }
+function addProfile(name, data) { const id = newId(); P.list.push({ id, name }); P.cur = id; savePK(); load(data); persist(); S.date = today(); render(); return id; }
 S.db = localDb; S.mode = 'live';
-if (!saved) try { persist(); } catch {}
-render();
+try { P = JSON.parse(localStorage.getItem(PKEY)) || P; } catch {}
+if (!P.list.length) { // ancienne version (un seul profil) → devient le premier profil
+  let old = null; try { old = JSON.parse(localStorage.getItem(OLDKEY)); } catch {}
+  if (old) { addProfile('Mon profil', old); try { localStorage.removeItem(OLDKEY); } catch {} }
+}
+if (P.list.some(x => x.id === P.cur)) openProfileId(P.cur);
+else if (P.list.length) openProfileId(P.list[0].id);
+else { load(null); render(); openWelcome(); }
 // mode hors connexion (uniquement quand l'appli est servie par un site, pas en double-clic)
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
 </script>
