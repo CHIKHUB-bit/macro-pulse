@@ -1,8 +1,8 @@
 // Mode hors connexion : garde une copie de l'appli sur l'appareil.
 // Fichiers de l'appli : réseau d'abord (pour avoir les mises à jour), copie si pas de réseau.
 // Polices et lecteur de code-barres : copie d'abord. Open Food Facts : toujours en direct.
-const CACHE = 'macro-pulse-v1';
-const SHELL = ['./', './index.html', './ciqual.js', './manifest.webmanifest', './icon.svg'];
+const CACHE = 'macro-pulse-v2';
+const SHELL = ['./', './index.html', './ciqual.js', './manifest.webmanifest', './icon.svg', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)));
