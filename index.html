@@ -1091,6 +1091,8 @@ load(saved || SEED);
 S.db = localDb; S.mode = 'live';
 if (!saved) try { persist(); } catch {}
 render();
+// mode hors connexion (uniquement quand l'appli est servie par un site, pas en double-clic)
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
 </script>
 
 </body></html>
