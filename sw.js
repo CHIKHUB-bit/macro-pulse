@@ -26,7 +26,7 @@ self.addEventListener('fetch', e => {
   if (url.origin === location.origin) {
     e.respondWith(fetch(req).then(res => keep(req, res))
       .catch(() => caches.match(req, { ignoreSearch: true }).then(m => m || caches.match('./index.html'))));
-  } else if (/(^|\.)fonts\.(googleapis|gstatic)\.com$|(^|\.)unpkg\.com$/.test(url.hostname)) {
+  } else if (/(^|\.)fonts\.(googleapis|gstatic)\.com$|(^|\.)unpkg\.com$|^www\.gstatic\.com$/.test(url.hostname)) {
     e.respondWith(caches.match(req).then(m => m || fetch(req).then(res => keep(req, res))));
   }
 });

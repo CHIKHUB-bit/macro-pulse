@@ -833,6 +833,7 @@ function openWelcome() {
     <p class="hint" style="font-size:14px">Ton compteur de calories et de macros. Réponds à quelques questions sur toi, ton objectif, ton sport et tes habitudes : l'appli calcule tes besoins.</p>
     <p class="hint">Tes données restent uniquement sur ce téléphone.</p>
     <div class="actions"><button class="btn" data-act="onb-start">Créer mon profil</button></div>
+    ${FB_CONFIG ? `<div class="actions"><button class="btn sec2" data-act="auth-new">☁️ J'ai déjà un compte</button></div>` : ''}
     <button class="link" data-act="pf-import">J'ai déjà un fichier de sauvegarde</button>`);
 }
 const ONB_DEF = () => ({ name: '', sex: 'M', birth: '', height: '', weight: '', goal: 'masse', rate: 0.35, target: '', by: '', neat: 1.45,
@@ -907,8 +908,123 @@ function openProfiles() {
     <div class="list">${P.list.map(x => `<button class="row" style="width:100%" data-act="pf-go" data-id="${esc(x.id)}"><span class="row-main"><span class="nm">${esc(x.name)}</span></span>${x.id === P.cur ? '<span class="tag">actif</span>' : ''}</button>`).join('')}
       <button class="addrow" data-act="onb-start">＋ Nouveau profil</button></div>
     ${pr ? `<p class="hint">${esc(pr.diet || '')} · ${esc(pr.meals)} repas / jour${pr.avoid ? ' · évite : ' + esc(pr.avoid) : ''}</p>` : ''}
+    ${syncBlock()}
     <div class="actions"><button class="btn sec2" data-act="onb-edit">Modifier mon questionnaire</button><button class="btn danger" data-act="pf-del">Supprimer ce profil</button></div>
     <p class="hint">Chaque profil a ses propres repas, objectifs et pesées, rangés uniquement sur cet appareil.</p>`);
+}
+
+/* ---------- synchronisation en ligne (Firebase, offre gratuite) ----------
+   Chaque compte a son « coffre » : users/{uid} (profil, objectifs, aliments, recettes) + users/{uid}/days/{date}.
+   Les règles Firestore n'autorisent chacun qu'à lire et écrire son propre coffre.
+   L'appareil reste la référence : on enregistre d'abord en local, puis on envoie les changements. */
+const FB_CONFIG = null;   // ← bloc firebaseConfig de la console Firebase (pas secret)
+const FBU = n => `https://www.gstatic.com/firebasejs/12.19.0/firebase-${n}.js`;
+let fb = null;
+const sync = { uid: null, last: { main: '', days: {} }, timer: null, busy: false, unsub: [] };
+const dirtyKey = id => 'macro-pulse-dirty-' + id;   // « des changements n'ont pas encore été envoyés »
+const curItem = () => P.list.find(x => x.id === P.cur) || {};
+const fbUser = () => fb && fb.auth.currentUser;
+const mainOf = () => JSON.parse(JSON.stringify({ profile: S.profile, goals: S.goals, wt: S.wt, foods: S.foods, routine: S.routine, recipes: S.recipes }));
+async function fbInit() {
+  if (fb || !FB_CONFIG) return fb;
+  const [{ initializeApp }, A, F] = await Promise.all([import(FBU('app')), import(FBU('auth')), import(FBU('firestore'))]);
+  const app = initializeApp(FB_CONFIG);
+  fb = { auth: A.getAuth(app), db: F.getFirestore(app), A, F };
+  A.onAuthStateChanged(fb.auth, () => { startSync(); if (S.ui.kind === 'profiles') openProfiles(); });
+  return fb;
+}
+function stopSync() { sync.unsub.forEach(f => f()); sync.unsub = []; sync.uid = null; clearTimeout(sync.timer); sync.timer = null; }
+function startSync() {
+  stopSync(); const u = fbUser(), it = curItem();
+  if (!u || !it.uid || it.uid !== u.uid) return;
+  const { F, db } = fb, uid = u.uid; sync.uid = uid; sync.last = { main: '', days: {} };
+  if (localStorage.getItem(dirtyKey(P.cur))) pushNow(true);   // changements faits sans réseau la dernière fois : ils passent d'abord
+  const busy = () => sync.timer || sync.busy;
+  sync.unsub.push(F.onSnapshot(F.doc(db, 'users', uid), s => {
+    if (!s.exists() || busy()) return;
+    const d = s.data(), j = JSON.stringify(d); if (j === sync.last.main) return;
+    sync.last.main = j; for (const k of ['profile', 'goals', 'wt', 'foods', 'routine', 'recipes']) if (d[k]) S[k] = d[k];
+    try { saveLocal(); } catch {} render();
+  }));
+  sync.unsub.push(F.onSnapshot(F.collection(db, 'users', uid, 'days'), s => {
+    if (busy()) return; let ch = false;
+    s.docChanges().forEach(c => { if (c.type === 'removed') return; const d = c.doc.data(), j = JSON.stringify(d);
+      if (j !== sync.last.days[c.doc.id]) { sync.last.days[c.doc.id] = j; S.days[c.doc.id] = d; ch = true; } });
+    if (ch) { try { saveLocal(); } catch {} render(); }
+  }));
+}
+async function pushNow(full) {
+  clearTimeout(sync.timer); sync.timer = null; if (!sync.uid) return;
+  const { F, db } = fb, uid = sync.uid, pid = P.cur, w = []; sync.busy = true;
+  try {
+    const m = mainOf(), mj = JSON.stringify(m);
+    if (full || mj !== sync.last.main) { w.push(F.setDoc(F.doc(db, 'users', uid), m)); sync.last.main = mj; }
+    for (const [d, day] of Object.entries(S.days)) { const c = JSON.parse(JSON.stringify(day)), j = JSON.stringify(c);
+      if (full || j !== sync.last.days[d]) { w.push(F.setDoc(F.doc(db, 'users', uid, 'days', d), c)); sync.last.days[d] = j; } }
+    await Promise.all(w); localStorage.removeItem(dirtyKey(pid));
+  } catch { toast('Synchro en attente : vérifie ta connexion.'); }
+  finally { sync.busy = false; }
+}
+async function cloudData(uid) {
+  const { F, db } = fb, s = await F.getDoc(F.doc(db, 'users', uid)); if (!s.exists()) return null;
+  const days = {}; (await F.getDocs(F.collection(db, 'users', uid, 'days'))).forEach(d => { days[d.id] = d.data(); });
+  return { ...s.data(), days };
+}
+function linkItem(user) { const it = curItem(); it.uid = user.uid; it.email = user.email || ''; savePK(); }
+function syncBlock() {
+  if (!FB_CONFIG) return '';
+  const it = curItem(), u = fbUser();
+  if (!it.uid) return `<button class="btn sec2" style="width:100%" data-act="auth-link">☁️ Synchroniser ce profil (téléphone + ordinateur)</button>`;
+  return `<div class="banner">☁️ Synchronisé avec <b>${esc(it.email)}</b>${u && u.uid === it.uid ? ' ✓' : ` · <button class="link" data-act="auth-link">Reconnecte-toi</button>`}
+    · <button class="link" data-act="sync-off">Arrêter</button></div>`;
+}
+function openAuth(mode) {
+  S.ui = { kind: 'auth', mode };
+  openSheet(`<div class="panel-h"><h3>Connexion</h3>${locked() ? '<button class="icon" data-act="auth-back" aria-label="Retour">‹</button>' : '<button class="icon" data-act="close" aria-label="Fermer">✕</button>'}</div>
+    <p class="hint">Un compte garde tes données en ligne pour les retrouver sur tous tes appareils. Tu n'as qu'à te connecter avec le même compte partout.</p>
+    <button class="btn" data-act="auth-google">Continuer avec Google</button>
+    <div class="lbl" style="text-align:center">ou avec un e-mail</div>
+    <div class="field"><label for="ae">E-mail</label><input class="in" id="ae" type="email" autocomplete="email"></div>
+    <div class="field"><label for="ap">Mot de passe (6 caractères minimum)</label><input class="in" id="ap" type="password" autocomplete="current-password"></div>
+    <div class="actions"><button class="btn sec2" data-act="auth-in">Se connecter</button><button class="btn sec2" data-act="auth-up">Créer un compte</button></div>
+    <button class="link" data-act="auth-reset">Mot de passe oublié ?</button>`);
+}
+const authErr = e => ({ 'auth/invalid-credential': 'E-mail ou mot de passe incorrect.', 'auth/wrong-password': 'Mot de passe incorrect.',
+  'auth/user-not-found': 'Aucun compte avec cet e-mail.', 'auth/email-already-in-use': 'Un compte existe déjà avec cet e-mail : connecte-toi.',
+  'auth/weak-password': 'Mot de passe trop court (6 caractères minimum).', 'auth/invalid-email': 'E-mail invalide.', 'auth/missing-password': 'Indique ton mot de passe.',
+  'auth/popup-closed-by-user': 'Connexion annulée.', 'auth/popup-blocked': "Fenêtre bloquée : utilise plutôt l'e-mail.",
+  'auth/network-request-failed': 'Pas de connexion internet.', 'auth/unauthorized-domain': "Ce site n'est pas encore autorisé dans Firebase." }[e && e.code] || 'Connexion impossible, réessaie.');
+async function doAuth(kind) {
+  let f; try { f = await fbInit(); } catch { toast('Pas de connexion internet.'); return; }
+  if (!f) { toast('La synchronisation n\'est pas encore configurée.'); return; }
+  const { A, auth } = f, mode = S.ui.mode, e = $('#ae') ? $('#ae').value.trim() : '', p = $('#ap') ? $('#ap').value : '';
+  try {
+    if (kind === 'reset') { await A.sendPasswordResetEmail(auth, e); toast('E-mail de réinitialisation envoyé.'); return; }
+    const cred = kind === 'google' ? await A.signInWithPopup(auth, new A.GoogleAuthProvider())
+      : kind === 'up' ? await A.createUserWithEmailAndPassword(auth, e, p) : await A.signInWithEmailAndPassword(auth, e, p);
+    const user = cred.user, cloud = await cloudData(user.uid);
+    if (mode === 'new') {   // nouvel appareil : on récupère le coffre, sinon questionnaire
+      if (cloud) { addProfile((cloud.profile && cloud.profile.name) || 'Mon profil', cloud); linkItem(user); startSync(); closeSheet(); toast(`Bienvenue ${curName()} : données récupérées !`); }
+      else { S.pendingUser = user; openOnb(false); toast('Compte prêt : réponds au questionnaire.'); }
+      return;
+    }
+    linkItem(user);
+    if (cloud) {   // le compte a déjà des données : laquelle garder ?
+      S.ui = { kind: 'linkq', cloud };
+      openSheet(`<div class="panel-h"><h3>Des données existent déjà</h3></div>
+        <p class="hint" style="font-size:14px">Ce compte a déjà des données en ligne (profil « ${esc((cloud.profile && cloud.profile.name) || '?')} », ${Object.keys(cloud.days).length} jour(s)). Lesquelles garder ?</p>
+        <div class="actions"><button class="btn" data-act="lk-cloud">Celles en ligne</button><button class="btn sec2" data-act="lk-local">Celles de cet appareil</button></div>
+        <p class="hint">« Celles en ligne » remplace les données de cet appareil. « Celles de cet appareil » remplace les données en ligne.</p>`);
+      return;
+    }
+    try { localStorage.setItem(dirtyKey(P.cur), '1'); } catch {}
+    startSync(); openProfiles(); toast('Synchronisation activée');
+  } catch (err) { toast(authErr(err)); }
+}
+function useCloud() {
+  const c = S.ui.cloud; stopSync(); load(c); try { saveLocal(); localStorage.removeItem(dirtyKey(P.cur)); } catch {}
+  if (c.profile && c.profile.name) { curItem().name = c.profile.name; savePK(); }
+  startSync(); closeSheet(); render(); toast('Données en ligne récupérées');
 }
 
 /* routine & recipe form */
@@ -1056,6 +1172,7 @@ document.addEventListener('click', ev => {
       }
       const d = today();
       addProfile(name, { profile: prof, goals: g, wt, days: { [d]: { date: d, weight: num(a.weight), routine: {}, entries: [] } } });
+      if (S.pendingUser) { linkItem(S.pendingUser); S.pendingUser = null; try { localStorage.setItem(dirtyKey(P.cur), '1'); } catch {} startSync(); }
       closeSheet(); render();
       if (a.breakfast === 'oui') { openRoutine(); toast('Enregistre ton petit-déjeuner : il sera compté chaque jour.'); }
       else toast(`Bienvenue ${name} !`);
@@ -1076,6 +1193,19 @@ document.addEventListener('click', ev => {
         catch { toast('Fichier invalide'); }
       };
       i.click(); break; }
+    case 'auth-new': openAuth('new'); break;
+    case 'auth-link': openAuth('link'); break;
+    case 'auth-back': openWelcome(); break;
+    case 'auth-google': doAuth('google'); break;
+    case 'auth-in': doAuth('in'); break;
+    case 'auth-up': doAuth('up'); break;
+    case 'auth-reset': doAuth('reset'); break;
+    case 'lk-cloud': useCloud(); break;
+    case 'lk-local': { try { localStorage.setItem(dirtyKey(P.cur), '1'); } catch {} startSync(); closeSheet(); toast('Synchronisation activée'); break; }
+    case 'sync-off': {
+      stopSync(); const it = curItem(); delete it.uid; delete it.email; savePK();
+      if (fbUser()) fb.A.signOut(fb.auth);
+      openProfiles(); toast('Synchronisation arrêtée : tes données restent sur cet appareil.'); break; }
     case 'voice': openVoice(); break;
     case 'v-meal': syncVoice(); S.ui.meal = b.dataset.meal; drawVoice(); break;
     case 'v-go': voiceGo(); break;
@@ -1186,13 +1316,23 @@ const savePK = () => { try { localStorage.setItem(PKEY, JSON.stringify(P)); } ca
 const curName = () => (P.list.find(x => x.id === P.cur) || {}).name || '';
 const snapshot = () => ({ profile: S.profile, goals: S.goals, wt: S.wt, foods: S.foods, routine: S.routine, recipes: S.recipes, days: S.days });
 function load(data) { Object.assign(S, FRESH()); for (const k of Object.keys(FRESH())) if (data && data[k]) S[k] = data[k]; S.goals.fib ??= 35; }
-function persist() { if (!P.cur) return; try { localStorage.setItem(dataKey(P.cur), JSON.stringify(snapshot())); } catch (e) { throw { code: 'quota_exceeded' }; } }
+function saveLocal() { if (P.cur) localStorage.setItem(dataKey(P.cur), JSON.stringify(snapshot())); }
+// enregistre sur l'appareil, puis (si le profil est synchronisé) envoie en ligne 1,2 s plus tard
+function persist() {
+  if (!P.cur) return;
+  try { saveLocal(); } catch (e) { throw { code: 'quota_exceeded' }; }
+  if (curItem().uid) { try { localStorage.setItem(dirtyKey(P.cur), '1'); } catch {} if (sync.uid) { clearTimeout(sync.timer); sync.timer = setTimeout(pushNow, 1200); } }
+}
 const newId = () => Math.random().toString(36).slice(2, 10);
 const localDb = {
   doc: path => ({ id: path.split('/')[1], set: async () => persist(), delete: async () => persist() }),
   collection: c => ({ doc: () => localDb.doc(c + '/' + newId()) })
 };
-function openProfileId(id) { let d = null; try { d = JSON.parse(localStorage.getItem(dataKey(id))); } catch {} P.cur = id; savePK(); load(d); S.date = today(); render(); }
+function openProfileId(id) {
+  let d = null; try { d = JSON.parse(localStorage.getItem(dataKey(id))); } catch {}
+  stopSync(); P.cur = id; savePK(); load(d); S.date = today(); render();
+  if (fb) startSync(); else if (curItem().uid) fbInit();   // la connexion relance la synchro toute seule
+}
 function addProfile(name, data) { const id = newId(); P.list.push({ id, name }); P.cur = id; savePK(); load(data); persist(); S.date = today(); render(); return id; }
 S.db = localDb; S.mode = 'live';
 try { P = JSON.parse(localStorage.getItem(PKEY)) || P; } catch {}
@@ -1203,6 +1343,19 @@ if (!P.list.length) { // ancienne version (un seul profil) → devient le premie
 if (P.list.some(x => x.id === P.cur)) openProfileId(P.cur);
 else if (P.list.length) openProfileId(P.list[0].id);
 else { load(null); render(); openWelcome(); }
+if (!fb && P.list.some(x => x.uid)) fbInit().catch(() => {});   // un profil est synchronisé : on se reconnecte en arrière-plan
+// Nouveau jour : quand l'appli revient au premier plan (ou reste ouverte) après minuit,
+// on passe au jour suivant — seulement si tu regardais « aujourd'hui » et qu'aucune fenêtre n'est ouverte.
+let lastToday = today();
+function checkNewDay() {
+  const t = today(); if (t === lastToday) return;
+  if (!$('#sheet').hidden) return;               // on attend que tu aies fini ce que tu notais
+  if (S.date === lastToday) S.date = t;
+  lastToday = t; render();
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) checkNewDay(); });
+window.addEventListener('focus', checkNewDay);
+setInterval(checkNewDay, 30000);
 // mode hors connexion (uniquement quand l'appli est servie par un site, pas en double-clic)
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
 </script>
