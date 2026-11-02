@@ -230,6 +230,7 @@ button { cursor: pointer; background: none; border: 0; padding: 0; }
     </div>
     <div class="readouts">
       <p class="rest" id="rest"></p>
+      <button class="link" id="finish" data-act="finish" hidden style="margin-top:-8px">🎯 Comment finir ma journée ?</button>
       <div class="mbar m-p"><div class="mrow"><span><i class="dot"></i>Protéines</span><span class="num" id="vp"></span></div><div class="bar"><i id="bp"></i></div></div>
       <div class="mbar m-c"><div class="mrow"><span><i class="dot"></i>Glucides</span><span class="num" id="vc"></span></div><div class="bar"><i id="bc"></i></div></div>
       <div class="mbar m-f"><div class="mrow"><span><i class="dot"></i>Lipides</span><span class="num" id="vf"></span></div><div class="bar"><i id="bf"></i></div></div>
@@ -343,6 +344,7 @@ function renderGauge() {
   $('#kgoal').textContent = `/ ${nf0.format(g.kcal)} kcal`;
   const rest = g.kcal - t.kcal, r = $('#rest');
   r.classList.toggle('is-over', rest < 0);
+  $('#finish').hidden = !(rest > 150 && S.date === today());
   r.innerHTML = rest >= 0 ? `Il te reste <b>${nf0.format(rest)} kcal</b>` : `<b>+${nf0.format(-rest)} kcal</b> au-dessus de l'objectif`;
   for (const k of ['p','c','f','fib']) {
     $('#v' + k).innerHTML = `<b>${nf0.format(t[k])}</b> / ${nf0.format(g[k])} g`;
@@ -1080,6 +1082,91 @@ function drawPickList() {
     <div class="actions"><button class="btn" data-act="pl-ok">Ajouter au repas</button></div>`);
 }
 
+/* ---------- « Comment finir ma journée ? » ----------
+   Propose 3 idées pour combler ce qu'il reste : une source de protéines + une de glucides (+ un peu de gras si besoin),
+   grammes calculés. Tes aliments, recettes et favoris d'abord ; sinon des aliments de base CIQUAL. */
+const STAPLES = ['poulet filet poele', 'riz blanc cuit', 'pates seches standard cuites', 'thon naturel', 'fromage blanc nature 0', 'oeuf dur',
+  'steak hache 5 cuit', 'saumon cuit', 'banane crue', 'flocon avoine', 'pomme terre bouillie', 'patate douce cuite', 'beurre cacahuete',
+  'huile olive vierge', 'lentille cuite', 'pois chiche cuit', 'tofu', 'yaourt grec'];
+const NO_MEAT = /poulet|boeuf|steak|porc|jambon|dinde|viande|lardon|saucisse|veau|agneau/, NO_FISH = /thon|saumon|poisson|cabillaud|sardine|crevette/,
+  NO_ANIMAL = /oeuf|lait|fromage|yaourt|whey|skyr|beurre(?! de cacahuete)|creme/;
+function dietOk(name) {
+  const n = norm(name), d = (S.profile && S.profile.diet) || '', avoid = norm((S.profile && S.profile.avoid) || '').split(/[,;]| et /).map(x => x.trim()).filter(x => x.length > 2);
+  if (avoid.some(a => n.includes(a))) return false;
+  if (/Végétarien|Végan/.test(d) && (NO_MEAT.test(n) || NO_FISH.test(n))) return false;
+  if (d === 'Pescétarien' && NO_MEAT.test(n)) return false;
+  if (d === 'Végan' && NO_ANIMAL.test(n)) return false;
+  if (/Sans porc|Halal/.test(d) && /porc|jambon|lardon/.test(n)) return false;
+  return true;
+}
+function finishPool() {
+  const pool = [], names = new Set();
+  const push = (name, per, ref, own) => { if (!per.kcal || !dietOk(name) || names.has(norm(name))) return; names.add(norm(name)); pool.push({ name, per, ref, own }); };
+  for (const [id, f] of Object.entries(S.foods)) push(f.name, perOf(f), { food: id }, true);
+  for (const [id, r] of Object.entries(S.recipes)) push(r.name, recipeInfo(r).per, { recipe: id }, true);
+  for (const q of STAPLES) { const r = cqSearch(q, 1)[0]; if (r) push(r[0], perOf(cqFood(r)), { cqr: r }, false); }
+  return pool;
+}
+const share = (x, k) => (k === 'f' ? 9 : 4) * x.per[k] / x.per.kcal;
+const isPowder = x => x.per.kcal > 300 && x.per.p > 60;
+// portions maximum réalistes : poudre 50 g, huile 20 g, protéines 250 g, gras 30 g, fruits 200 g, aliments secs 150 g, féculents cuits 400 g
+const maxG = x => isPowder(x) ? 50 : share(x, 'f') > 0.9 ? 20 : share(x, 'p') >= 0.35 ? 250 : share(x, 'f') > 0.6 ? 30
+  : /banane|fruit|pomme(?! de terre)|poire|kiwi|orange/.test(norm(x.name)) ? 200 : x.per.kcal > 200 ? 150 : 400;
+const r10 = (v, lo, hi) => Math.max(lo, Math.min(hi, Math.round(v / 10) * 10));
+// snack = collation (laitages, whey, pain, flocons, fruits, beurre de cacahuète) ; sinon vrai plat (viande/poisson/œufs + féculent + huile)
+function finishIdeas(R, snack) {
+  const pool = finishPool(), ideas = [], favs = [];
+  const prot = pool.filter(x => share(x, 'p') >= 0.35 && (snack ? (isPowder(x) || /fromage blanc|yaourt|skyr|oeuf/.test(norm(x.name))) : !isPowder(x) && !/fromage blanc|yaourt|skyr/.test(norm(x.name))));
+  const fruity = x => /banane|fruit|pomme(?! de terre)|poire|compote|jus|kiwi|orange/.test(norm(x.name));
+  const carb = pool.filter(x => share(x, 'c') >= 0.6 && (snack ? x.per.kcal > 200 || fruity(x) : x.per.kcal <= 200 && !fruity(x)));
+  const fat = pool.filter(x => share(x, 'f') >= 0.7 && share(x, 'p') < 0.25 && !/yaourt|fromage|lait|creme/.test(norm(x.name))).sort((a, b) => snack ? share(a, 'f') - share(b, 'f') : share(b, 'f') - share(a, 'f'));
+  const score = (items, own) => { const t = sumOf(items);
+    return { t, s: Math.abs(t.kcal - R.kcal) / R.kcal + 0.8 * Math.abs(t.p - Math.max(R.p, 0)) / Math.max(R.p, 20) + (own ? 0 : 0.15) }; };
+  const item = (x, g) => ({ name: x.name, g, per: { ...x.per }, ...x.ref });
+  for (const P of R.p > 8 ? prot : [null]) for (const C of carb) {
+    if (P === C) continue;
+    const items = [];
+    if (P) items.push(item(P, r10(R.p / (P.per.p / 100), 30, maxG(P))));
+    let left = R.kcal - sumOf(items).kcal;
+    const gc = r10(left / (C.per.kcal / 100), 0, maxG(C)); if (gc >= 30) items.push(item(C, gc));
+    left = R.kcal - sumOf(items).kcal;
+    const F = fat[0]; if (left > 150 && F) { const gf = Math.max(5, Math.min(maxG(F), Math.round(left / (F.per.kcal / 100) / 5) * 5)); items.push(item(F, gf)); }
+    if (!items.length) continue;
+    const { t, s } = score(items, (!P || P.own) && C.own);
+    ideas.push({ title: items.map(e => e.name).join(' + '), items, t, s, key: P ? P.name : C.name });
+  }
+  for (const [id, f] of Object.entries(S.favs || {})) {   // un favori, agrandi ou réduit pour coller au reste
+    const base = sumOf(f.items).kcal; if (!base) continue;
+    const k = Math.max(0.75, Math.min(1.5, R.kcal / base)), items = f.items.map(e => ({ ...JSON.parse(JSON.stringify(e)), g: Math.round(e.g * k / 5) * 5 }));
+    const { t, s } = score(items, true); favs.push({ title: `⭐ ${f.name}${Math.abs(k - 1) > 0.05 ? ' × ' + nf1.format(k) : ''}`, items, t, s, key: 'fav' + id });
+  }
+  ideas.sort((a, b) => a.s - b.s); favs.sort((a, b) => a.s - b.s);
+  const out = favs.slice(0, 1), seen = new Set();   // ton meilleur favori d'abord, puis des idées avec des sources différentes
+  for (const i of ideas) { if (seen.has(i.key)) continue; seen.add(i.key); out.push(i); if (out.length === 3) break; }
+  return out;
+}
+function remaining() { const t = totals(S.date), g = S.goals; return { kcal: g.kcal - t.kcal, p: g.p - t.p, c: g.c - t.c, f: g.f - t.f }; }
+function openFinish() {
+  const R = remaining(), h = new Date().getHours(), day = getDay(S.date);
+  const meal = S.ui.meal || (h < 15 ? 'midi' : h < 18 ? 'extra' : 'soir');
+  // part du reste pour CE repas : divisé par le nombre de vrais repas encore vides (midi n'est plus compté après 15 h)
+  const empty = k => !(day.entries || []).some(e => e.meal === k);
+  const left = ['midi', 'soir'].filter(k => empty(k) && !(k === 'midi' && h >= 15 && meal !== 'midi')).length;
+  const part = meal === 'extra' ? Math.min(0.35, 1 / (left + 1)) : 1 / Math.max(1, left);
+  const T = { kcal: R.kcal * part, p: R.p * part, c: R.c * part, f: R.f * part };
+  S.ui = { kind: 'finish', meal, ideas: R.kcal > 100 ? finishIdeas(T, meal === 'extra') : [] };
+  const pos = v => nf0.format(Math.max(0, v));
+  openSheet(`${head('Comment finir ma journée ?')}
+    <p class="hint" style="font-size:14px">Il te reste <b>${pos(R.kcal)} kcal</b> sur la journée · P ${pos(R.p)} g · G ${pos(R.c)} g · L ${pos(R.f)} g</p>
+    ${part < 1 && R.kcal > 100 ? `<p class="hint">Pour ce repas, vise ≈ <b>${pos(T.kcal)} kcal</b> et <b>${pos(T.p)} g de protéines</b>${meal !== 'extra' && left > 1 ? ` (il te reste ${left} repas)` : ''}.</p>` : ''}
+    <div class="seg">${MEALS.map(([k, l]) => `<button class="${S.ui.meal === k ? 'on' : ''}" data-act="fin-meal" data-meal="${k}">${l}</button>`).join('')}</div>
+    ${R.kcal <= 100 ? '<div class="empty">🎯 Objectif atteint pour aujourd\'hui, bravo !</div>' : !S.ui.ideas.length ? '<div class="empty">Ajoute quelques aliments à ta liste pour avoir des idées.</div>'
+      : `<div class="list">${S.ui.ideas.map((i, n) => `<button class="row" style="width:100%" data-act="fin-pick" data-i="${n}"><span class="row-main"><span class="nm">${esc(i.title)}</span>
+        <small>${i.items.map(e => `${esc(e.name)} ${nf0.format(e.g)} g`).join(' · ')}</small>
+        <small>${nf0.format(i.t.kcal)} kcal · P ${nf0.format(i.t.p)} · G ${nf0.format(i.t.c)} · L ${nf0.format(i.t.f)} → reste ${nf0.format(R.kcal - i.t.kcal)} kcal</small></span><span class="kc">＋</span></button>`).join('')}</div>
+      <p class="hint">Touche une idée : tu ajustes les grammes, puis tu l'ajoutes au repas choisi.</p>`}`);
+}
+
 /* routine & recipe form */
 function openRoutine(id, coll = 'routine', preset) {
   const r = id ? S[coll][id] : null;
@@ -1246,6 +1333,9 @@ document.addEventListener('click', ev => {
         catch { toast('Fichier invalide'); }
       };
       i.click(); break; }
+    case 'finish': openFinish(); break;
+    case 'fin-meal': S.ui.meal = b.dataset.meal; openFinish(); break;
+    case 'fin-pick': { const i = S.ui.ideas[+b.dataset.i]; openPickList(S.ui.meal, 'Idée', i.items); break; }
     case 'same-y': openPickList(b.dataset.meal, 'Comme hier', yEntries(b.dataset.meal)); break;
     case 'fav-save': openFavSave(b.dataset.meal); break;
     case 'fav-ok': {
@@ -1263,7 +1353,9 @@ document.addEventListener('click', ev => {
       if (!ok.length) { toast('Rien à ajouter.'); break; }
       if (u.favId && $('#pfav') && $('#pfav').checked && S.favs[u.favId]) S.favs[u.favId].items = ok.map(({ g0, ...e }) => e);
       const day = cloneDay(S.date);
-      for (const { g0, ...e } of ok) day.entries.push({ ...e, id: newId(), meal: u.meal, at: Date.now() });
+      for (const { g0, cqr, ...e } of ok) {   // un aliment de base CIQUAL est copié dans ta liste au moment de l'ajout
+        if (cqr) e.food = adoptFood(cqFood(cqr));
+        day.entries.push({ ...e, id: newId(), meal: u.meal, at: Date.now() }); }
       saveDay(day); closeSheet(); toast(`${ok.length} aliment${ok.length > 1 ? 's' : ''} ajouté${ok.length > 1 ? 's' : ''} · ${nf0.format(sumOf(ok).kcal)} kcal`); break; }
     case 'auth-new': openAuth('new'); break;
     case 'auth-link': openAuth('link'); break;
