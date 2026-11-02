@@ -399,8 +399,17 @@ function renderMeals() {
     const rows = list.map(([e, i]) => { const m = scale(perOf(e.per || {}), +e.g || 0); sum = plus(sum, m);
       return `<div class="row"><button class="row-main" data-act="e-edit" data-i="${i}"><span class="nm">${esc(e.name)}${e.recipe ? '<span class="tag">recette</span>' : ''}</span><small>${nf1.format(e.g)} g · P ${nf1.format(m.p)} · G ${nf1.format(m.c)} · L ${nf1.format(m.f)}</small></button><span class="kc">${nf0.format(m.kcal)}</span></div>`; }).join('');
     return `<section class="sec"><div class="sec-h"><h2>${label}</h2><span class="num">${list.length ? nf0.format(sum.kcal) + ' kcal' : ''}</span></div>
-      <div class="list">${rows}<button class="addrow" data-act="add" data-meal="${k}">＋ Ajouter</button>${list.length ? `<button class="addrow sub" data-act="save-recipe" data-meal="${k}">Enregistrer ce repas comme recette</button>` : ''}</div></section>`;
+      <div class="list">${rows}<button class="addrow" data-act="add" data-meal="${k}">＋ Ajouter</button>${mealExtras(k, list.length)}</div></section>`;
   }).join('');
+}
+// sous chaque repas : « Comme hier », « Mes favoris », et (si le repas n'est pas vide) « Garder en favori » / « Faire une recette »
+const yEntries = k => (getDay(shiftKey(S.date, -1)).entries || []).filter(e => e.meal === k);
+const sumOf = items => items.reduce((s, e) => plus(s, scale(perOf(e.per || {}), +e.g || 0)), Z());
+function mealExtras(k, n) {
+  const y = yEntries(k), nf = Object.keys(S.favs || {}).length;
+  return (!n && y.length ? `<button class="addrow sub" data-act="same-y" data-meal="${k}">↺ Comme hier · ${y.length} aliment${y.length > 1 ? 's' : ''} · ${nf0.format(sumOf(y).kcal)} kcal</button>` : '')
+    + (nf ? `<button class="addrow sub" data-act="fav-open" data-meal="${k}">⭐ Mes favoris</button>` : '')
+    + (n ? `<div class="addrow sub" style="gap:16px"><button class="link" data-act="fav-save" data-meal="${k}">☆ Garder en favori</button><button class="link" data-act="save-recipe" data-meal="${k}">Faire une recette</button></div>` : '');
 }
 function renderBanner() {
   const b = $('#banner');
@@ -924,7 +933,7 @@ const sync = { uid: null, last: { main: '', days: {} }, timer: null, busy: false
 const dirtyKey = id => 'macro-pulse-dirty-' + id;   // « des changements n'ont pas encore été envoyés »
 const curItem = () => P.list.find(x => x.id === P.cur) || {};
 const fbUser = () => fb && fb.auth.currentUser;
-const mainOf = () => JSON.parse(JSON.stringify({ profile: S.profile, goals: S.goals, wt: S.wt, foods: S.foods, routine: S.routine, recipes: S.recipes }));
+const mainOf = () => JSON.parse(JSON.stringify({ profile: S.profile, goals: S.goals, wt: S.wt, foods: S.foods, routine: S.routine, recipes: S.recipes, favs: S.favs }));
 async function fbInit() {
   if (fb || !FB_CONFIG) return fb;
   const [{ initializeApp }, A, F] = await Promise.all([import(FBU('app')), import(FBU('auth')), import(FBU('firestore'))]);
@@ -943,7 +952,7 @@ function startSync() {
   sync.unsub.push(F.onSnapshot(F.doc(db, 'users', uid), s => {
     if (!s.exists() || busy()) return;
     const d = s.data(), j = JSON.stringify(d); if (j === sync.last.main) return;
-    sync.last.main = j; for (const k of ['profile', 'goals', 'wt', 'foods', 'routine', 'recipes']) if (d[k]) S[k] = d[k];
+    sync.last.main = j; for (const k of ['profile', 'goals', 'wt', 'foods', 'routine', 'recipes', 'favs']) if (d[k]) S[k] = d[k];
     try { saveLocal(); } catch {} render();
   }));
   sync.unsub.push(F.onSnapshot(F.collection(db, 'users', uid, 'days'), s => {
@@ -1025,6 +1034,50 @@ function useCloud() {
   const c = S.ui.cloud; stopSync(); load(c); try { saveLocal(); localStorage.removeItem(dirtyKey(P.cur)); } catch {}
   if (c.profile && c.profile.name) { curItem().name = c.profile.name; savePK(); }
   startSync(); closeSheet(); render(); toast('Données en ligne récupérées');
+}
+
+/* ---------- favoris et « Comme hier » ----------
+   Un favori = la liste des aliments d'un repas (avec leurs grammes habituels).
+   Quand on l'ajoute (ou qu'on recopie hier), on passe par une liste où chaque gramme se modifie. */
+const copyEntry = e => { const x = JSON.parse(JSON.stringify(e)); delete x.id; delete x.at; delete x.meal; return x; };
+const mealLabel = k => MEALS.find(m => m[0] === k)[1];
+function openFavSave(meal) {
+  const items = (getDay(S.date).entries || []).filter(e => e.meal === meal).map(copyEntry);
+  S.ui = { kind: 'favsave', meal, items };
+  openSheet(`${head('Garder en favori')}
+    <div class="field"><label for="fvn">Nom du favori</label><input class="in" id="fvn" value="${esc(mealLabel(meal) + ' habituel')}" autofocus></div>
+    <p class="hint">${items.map(e => `${esc(e.name)} · ${nf0.format(e.g)} g`).join('<br>')}</p>
+    ${previewHtml(sumOf(items))}
+    <p class="hint">Les grammes enregistrés servent de base : tu pourras les modifier à chaque fois que tu ajoutes ce favori.</p>
+    <div class="actions"><button class="btn" data-act="fav-ok">Enregistrer</button></div>`);
+}
+function openFavs(meal) {
+  S.ui = { kind: 'favs', meal };
+  const list = Object.entries(S.favs).sort((a, b) => String(a[1].name).localeCompare(String(b[1].name), 'fr'));
+  openSheet(`${head('Favoris · ' + mealLabel(meal))}
+    <div class="list">${list.length ? list.map(([id, f]) => { const t = sumOf(f.items);
+      return `<div class="row"><button class="row-main" data-act="fav-pick" data-id="${esc(id)}"><span class="nm">⭐ ${esc(f.name)}</span>
+        <small>${f.items.map(e => esc(e.name)).join(' · ')}</small><small>${nf0.format(t.kcal)} kcal · P ${nf0.format(t.p)} · G ${nf0.format(t.c)} · L ${nf0.format(t.f)}</small></button>
+        <button class="icon" data-act="fav-del" data-id="${esc(id)}" aria-label="Supprimer ce favori">✕</button></div>`; }).join('') : '<div class="empty">Aucun favori pour l\'instant.</div>'}</div>
+    <p class="hint">Touche un favori : tu ajustes les grammes de chaque ingrédient, puis tu l'ajoutes.</p>`);
+}
+// liste à ajuster avant ajout (favori ou « Comme hier »)
+function openPickList(meal, title, items, favId) {
+  S.ui = { kind: 'plist', meal, title, favId: favId || null, items: items.map(e => ({ ...copyEntry(e), g0: +e.g || 0 })) };
+  drawPickList();
+}
+function syncPick() { if (S.ui.kind !== 'plist') return; panel.querySelectorAll('[data-pg]').forEach(i => { S.ui.items[+i.dataset.pg].g = num(i.value) || 0; }); }
+function drawPickList() {
+  const u = S.ui;
+  const rows = u.items.map((e, i) => { const m = scale(perOf(e.per || {}), +e.g || 0);
+    return `<div class="vrow"><div class="row-main"><span class="nm">${esc(e.name)}</span><small id="pk-${i}">${nf0.format(m.kcal)} kcal${e.g0 && e.g !== e.g0 ? ` · d'habitude ${nf0.format(e.g0)} g` : ''}</small></div>
+      <input class="in" data-pg="${i}" inputmode="decimal" value="${String(e.g).replace('.', ',')}" aria-label="Grammes de ${esc(e.name)}"><span class="unit mono">g</span><span></span>
+      <button class="icon" data-act="pl-del" data-i="${i}" aria-label="Retirer">✕</button></div>`; }).join('');
+  openSheet(`${head(esc(u.title) + ' · ' + mealLabel(u.meal))}
+    ${u.items.length ? `<div class="list">${rows}</div>` : '<div class="empty">Plus aucun aliment.</div>'}
+    <div id="ptot">${previewHtml(sumOf(u.items))}</div>
+    ${u.favId ? `<label class="hint" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="pfav"> Garder ces grammes pour la prochaine fois</label>` : ''}
+    <div class="actions"><button class="btn" data-act="pl-ok">Ajouter au repas</button></div>`);
 }
 
 /* routine & recipe form */
@@ -1193,6 +1246,25 @@ document.addEventListener('click', ev => {
         catch { toast('Fichier invalide'); }
       };
       i.click(); break; }
+    case 'same-y': openPickList(b.dataset.meal, 'Comme hier', yEntries(b.dataset.meal)); break;
+    case 'fav-save': openFavSave(b.dataset.meal); break;
+    case 'fav-ok': {
+      const name = $('#fvn').value.trim(); if (!name) { toast('Donne un nom à ton favori.'); break; }
+      const ref = S.db.collection('favs').doc(); S.favs[ref.id] = { name, items: S.ui.items };
+      write(() => ref.set()); closeSheet(); render(); toast(`⭐ ${name} enregistré`); break; }
+    case 'fav-open': openFavs(b.dataset.meal); break;
+    case 'fav-pick': { const f = S.favs[b.dataset.id]; openPickList(S.ui.meal, f.name, f.items, b.dataset.id); break; }
+    case 'fav-del': {
+      if (!b.classList.contains('armed')) { b.classList.add('armed'); b.textContent = '?'; toast('Touche encore pour supprimer ce favori.'); break; }
+      const id = b.dataset.id; delete S.favs[id]; write(() => S.db.doc('favs/' + id).delete()); openFavs(S.ui.meal); render(); break; }
+    case 'pl-del': syncPick(); S.ui.items.splice(+b.dataset.i, 1); drawPickList(); break;
+    case 'pl-ok': {
+      syncPick(); const u = S.ui, ok = u.items.filter(e => e.g > 0);
+      if (!ok.length) { toast('Rien à ajouter.'); break; }
+      if (u.favId && $('#pfav') && $('#pfav').checked && S.favs[u.favId]) S.favs[u.favId].items = ok.map(({ g0, ...e }) => e);
+      const day = cloneDay(S.date);
+      for (const { g0, ...e } of ok) day.entries.push({ ...e, id: newId(), meal: u.meal, at: Date.now() });
+      saveDay(day); closeSheet(); toast(`${ok.length} aliment${ok.length > 1 ? 's' : ''} ajouté${ok.length > 1 ? 's' : ''} · ${nf0.format(sumOf(ok).kcal)} kcal`); break; }
     case 'auth-new': openAuth('new'); break;
     case 'auth-link': openAuth('link'); break;
     case 'auth-back': openWelcome(); break;
@@ -1285,6 +1357,8 @@ document.addEventListener('input', ev => {
   else if (t.id === 'g') { S.ui.g = t.value; if (S.ui.kind === 'add') updatePreview(); else if (S.ui.kind === 'entry') { const e = getDay(S.date).entries[S.ui.i]; $('#pv').innerHTML = previewHtml(scale(perOf(e.per || {}), num(t.value) || 0)); } }
   else if (['fk','fp','fc','ff'].includes(t.id)) foodHint();
   else if (['gk','gp','gc','gf'].includes(t.id)) goalHint();
+  else if (t.dataset.pg != null) { syncPick(); const e = S.ui.items[+t.dataset.pg], m = scale(perOf(e.per || {}), e.g);
+    $('#pk-' + t.dataset.pg).textContent = `${nf0.format(m.kcal)} kcal${e.g !== e.g0 ? ` · d'habitude ${nf0.format(e.g0)} g` : ''}`; $('#ptot').innerHTML = previewHtml(sumOf(S.ui.items)); }
   else if (t.dataset.vg != null) { S.ui.items[+t.dataset.vg].touched = true; syncVoice(); $('#vtot').innerHTML = previewHtml(vTotal()); }
   else if (S.ui.kind === 'routine') routinePreview();
 });
@@ -1310,11 +1384,11 @@ $('#w-in').addEventListener('change', ev => {
    simplement tout le profil courant. Rien ne quitte l'appareil. */
 const PKEY = 'macro-pulse-profiles', OLDKEY = 'macro-pulse-v1';
 const dataKey = id => 'macro-pulse-p-' + id;
-const FRESH = () => ({ profile: null, goals: { kcal: 2500, p: 120, c: 300, f: 70, fib: 30 }, wt: { target: null, by: null }, foods: {}, routine: {}, recipes: {}, days: {} });
+const FRESH = () => ({ profile: null, goals: { kcal: 2500, p: 120, c: 300, f: 70, fib: 30 }, wt: { target: null, by: null }, foods: {}, routine: {}, recipes: {}, favs: {}, days: {} });
 let P = { list: [], cur: null };
 const savePK = () => { try { localStorage.setItem(PKEY, JSON.stringify(P)); } catch {} };
 const curName = () => (P.list.find(x => x.id === P.cur) || {}).name || '';
-const snapshot = () => ({ profile: S.profile, goals: S.goals, wt: S.wt, foods: S.foods, routine: S.routine, recipes: S.recipes, days: S.days });
+const snapshot = () => ({ profile: S.profile, goals: S.goals, wt: S.wt, foods: S.foods, routine: S.routine, recipes: S.recipes, favs: S.favs, days: S.days });
 function load(data) { Object.assign(S, FRESH()); for (const k of Object.keys(FRESH())) if (data && data[k]) S[k] = data[k]; S.goals.fib ??= 35; }
 function saveLocal() { if (P.cur) localStorage.setItem(dataKey(P.cur), JSON.stringify(snapshot())); }
 // enregistre sur l'appareil, puis (si le profil est synchronisé) envoie en ligne 1,2 s plus tard
