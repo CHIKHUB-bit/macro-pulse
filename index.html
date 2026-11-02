@@ -668,18 +668,20 @@ function openMonth(mk) {
     <p class="hint">Moyenne par jour pour chaque semaine. Les jours sans repas noté sont exclus.</p>`);
 }
 
-/* conseil kcal : pente du poids sur 3 semaines (règle : < 0,2 kg/sem → +150 ; > 0,5 → −150) */
+/* conseil kcal, pensé pour des pesées rares : juste après une nouvelle pesée (moins de 7 jours),
+   on compare avec la pesée précédente d'au moins 3 semaines plus tôt. Une seule proposition par pesée.
+   Prise de masse : < 0,2 kg/sem → +150 (+200 si < 0,1) ; > 0,5 → −150. Sèche et maintien : règles inversées. */
 function adjTip() {
-  const t = today(), from = shiftKey(t, -21);
-  if (S.wt.adj && S.wt.adj > shiftKey(t, -14)) return '';
-  const pts = Object.values(S.days).filter(d => d.weight != null && d.date >= from && d.date <= t);
-  if (pts.length < 3) return '';
-  const xs = pts.map(d => (fromKey(d.date) - fromKey(from)) / 864e5), ys = pts.map(d => d.weight);
-  if (Math.max(...xs) - Math.min(...xs) < 13) return '';
-  const mx = xs.reduce((a, b) => a + b) / xs.length, my = ys.reduce((a, b) => a + b) / ys.length;
-  const wk = 7 * xs.reduce((s, x, i) => s + (x - mx) * (ys[i] - my), 0) / xs.reduce((s, x) => s + (x - mx) ** 2, 0);
-  const d = wk < 0.2 ? 150 : wk > 0.5 ? -150 : 0; if (!d) return '';
-  return `<span>Tu prends ${wk >= 0 ? '+' : ''}${nf2.format(wk)} kg/sem. ${d > 0 ? 'Un peu lent' : 'Un peu rapide'} : ${d > 0 ? '+' : '−'}150 kcal ?</span><button data-act="adj" data-d="${d}">Appliquer</button>`;
+  const pts = weighIns(), last = pts[pts.length - 1]; if (!last) return '';
+  if (dayN(today()) - last.n > 7 || (S.wt.adj && S.wt.adj >= last.k)) return '';
+  const ref = pts.filter(p => p.n <= last.n - 21).pop(); if (!ref) return '';
+  const wk = (last.w - ref.w) / ((last.n - ref.n) / 7), goal = (S.profile && S.profile.goal) || 'masse';
+  const d = goal === 'seche' ? (wk > -0.2 ? -150 : wk < -0.8 ? 150 : 0)
+    : goal === 'maintien' ? (wk > 0.2 ? -150 : wk < -0.2 ? 150 : 0)
+    : (wk < 0.1 ? 200 : wk < 0.2 ? 150 : wk > 0.5 ? -150 : 0);
+  if (!d) return '';
+  const weeks = Math.round((last.n - ref.n) / 7);
+  return `<span>${wk >= 0 ? '+' : '−'}${nf1.format(Math.abs(last.w - ref.w))} kg en ${weeks} semaines (${wk >= 0 ? '+' : '−'}${nf2.format(Math.abs(wk))} kg/sem). ${d > 0 ? 'Un peu lent' : 'Un peu rapide'} : ${d > 0 ? '+' : '−'}${Math.abs(d)} kcal par jour ?</span><button data-act="adj" data-d="${d}">Appliquer</button>`;
 }
 
 /* scan code-barres + Open Food Facts */
@@ -1168,65 +1170,57 @@ function openFinish() {
       <p class="hint">Touche une idée : tu ajustes les grammes, puis tu l'ajoutes au repas choisi.</p>`}`);
 }
 
-/* ---------- courbe de poids ----------
-   Points = pesées ; ligne = moyenne sur 7 jours (gomme les variations d'eau) ; pointillés = objectif et projection.
-   Rythme = pente des pesées sur les 28 derniers jours (droite des moindres carrés). */
+/* ---------- courbe de poids (pesées rares : une tous les 1 à 2 mois suffit) ----------
+   Un point par pesée, reliés entre eux. Ligne verte = chemin idéal de ta 1re pesée jusqu'à l'objectif à la date visée.
+   Rythme = pente de toutes tes pesées (droite des moindres carrés), dès qu'elles couvrent au moins 2 semaines. */
 const dayN = k => Math.round(fromKey(k) / 864e5);
 function weighIns() { return Object.values(S.days).filter(d => d.weight != null).map(d => ({ k: d.date, n: dayN(d.date), w: +d.weight })).sort((a, b) => a.n - b.n); }
-function withAvg(pts) { return pts.map(p => { const win = pts.filter(q => q.n <= p.n && q.n > p.n - 7); return { ...p, a: win.reduce((s, q) => s + q.w, 0) / win.length }; }); }
 function slopePerDay(pts) {
-  const last = pts.length ? pts[pts.length - 1].n : 0, r = pts.filter(p => p.n > last - 28);
-  if (r.length < 3 || r[r.length - 1].n - r[0].n < 7) return null;
-  const mx = r.reduce((s, p) => s + p.n, 0) / r.length, my = r.reduce((s, p) => s + p.w, 0) / r.length;
-  return r.reduce((s, p) => s + (p.n - mx) * (p.w - my), 0) / r.reduce((s, p) => s + (p.n - mx) ** 2, 0);
+  if (pts.length < 2 || pts[pts.length - 1].n - pts[0].n < 14) return null;
+  const mx = pts.reduce((s, p) => s + p.n, 0) / pts.length, my = pts.reduce((s, p) => s + p.w, 0) / pts.length;
+  return pts.reduce((s, p) => s + (p.n - mx) * (p.w - my), 0) / pts.reduce((s, p) => s + (p.n - mx) ** 2, 0);
 }
 const longDate = n => new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date(n * 864e5));
 const shortDate = n => new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'short' }).format(new Date(n * 864e5));
-function openWeight(range) {
-  if (range == null) range = S.ui.kind === 'wchart' ? S.ui.range : 90;   // 0 = « Tout »
-  S.ui = { kind: 'wchart', range };
-  const all = withAvg(weighIns()), tgt = S.wt.target, by = S.wt.by;
-  const segR = `<div class="seg">${[[30, '1 mois'], [90, '3 mois'], [0, 'Tout']].map(([v, l]) => `<button class="${range === v ? 'on' : ''}" data-act="wc-range" data-v="${v}">${l}</button>`).join('')}</div>`;
-  if (all.length < 2) { openSheet(`${head('Ma courbe de poids')}${segR}<div class="empty">Note ton poids au moins 2 jours (1 à 2 fois par semaine suffit) pour voir ta courbe.</div>`); return; }
-  const last = all[all.length - 1], from = range ? last.n - range : all[0].n, pts = all.filter(p => p.n >= from);
-  const sl = slopePerDay(all), wk = sl == null ? null : sl * 7;
-  // projection : jusqu'à 30 jours après la dernière pesée (ou jusqu'à l'objectif s'il est atteint avant)
-  const projEnd = sl ? last.n + 30 : null, projW = sl ? last.a + sl * 30 : null;
-  const ws = pts.flatMap(p => [p.w, p.a]).concat(projW != null ? [projW] : []);
-  let lo = Math.min(...ws), hi = Math.max(...ws); if (tgt && Math.abs(tgt - hi) < 3 && Math.abs(tgt - lo) < 6) { lo = Math.min(lo, tgt); hi = Math.max(hi, tgt); }
-  lo = Math.floor(lo - 0.3); hi = Math.ceil(hi + 0.3); if (hi - lo < 2) hi = lo + 2;
-  const x0 = pts[0].n, x1 = Math.max(projEnd || last.n, last.n + 1), W = 340, H = 190, L = 34, T = 10, B = 22;
-  const X = n => L + (n - x0) / (x1 - x0) * (W - L - 6), Y = w => T + (hi - w) / (hi - lo) * (H - T - B);
-  const grid = [...Array(hi - lo + 1)].map((_, i) => lo + i).filter((v, i, a) => a.length <= 7 || i % 2 === 0)
-    .map(v => `<line x1="${L}" x2="${W - 6}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--line)"/><text x="${L - 6}" y="${Y(v) + 3}" text-anchor="end" font-size="9" fill="var(--muted)">${v}</text>`).join('');
-  const xl = [x0, Math.round((x0 + last.n) / 2), last.n].map(n => `<text x="${X(n)}" y="${H - 6}" text-anchor="middle" font-size="9" fill="var(--muted)">${shortDate(n)}</text>`).join('');
-  const avgLine = pts.map(p => `${X(p.n).toFixed(1)},${Y(p.a).toFixed(1)}`).join(' ');
-  const dots = pts.map(p => `<circle cx="${X(p.n).toFixed(1)}" cy="${Y(p.w).toFixed(1)}" r="2.6" fill="var(--muted)" opacity=".7"/>`).join('');
-  const tgtLine = tgt && tgt >= lo && tgt <= hi ? `<line x1="${L}" x2="${W - 6}" y1="${Y(tgt)}" y2="${Y(tgt)}" stroke="var(--f)" stroke-dasharray="4 4"/><text x="${W - 8}" y="${Y(tgt) - 4}" text-anchor="end" font-size="9" fill="var(--f)">objectif ${nf1.format(tgt)} kg</text>`
-    : tgt ? `<text x="${W - 8}" y="${tgt > hi ? T + 8 : H - B - 4}" text-anchor="end" font-size="9" fill="var(--f)">objectif ${nf1.format(tgt)} kg ${tgt > hi ? '↑' : '↓'}</text>` : '';
-  const proj = sl ? `<line x1="${X(last.n)}" y1="${Y(last.a)}" x2="${X(projEnd)}" y2="${Y(projW)}" stroke="var(--accent)" stroke-dasharray="2 4" stroke-width="2"/>` : '';
-  const svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto" role="img" aria-label="Courbe de poids">${grid}${tgtLine}
-    <polyline points="${avgLine}" fill="none" stroke="var(--accent)" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/>${proj}${dots}
-    <circle cx="${X(last.n)}" cy="${Y(last.a)}" r="4" fill="var(--accent)"/>${xl}</svg>`;
+function openWeight() {
+  S.ui = { kind: 'wchart' };
+  const pts = weighIns(), tgt = S.wt.target, byN = S.wt.by ? dayN(S.wt.by) : null, now = dayN(today());
+  const tip = '<p class="hint">Pèse-toi quand tu peux (le matin, à jeun) et note ton poids dans le bloc Poids : chaque pesée ajoute un point.</p>';
+  if (!pts.length) { openSheet(`${head('Ma courbe de poids')}<div class="empty">Aucune pesée pour l'instant.</div>${tip}`); return; }
+  const first = pts[0], last = pts[pts.length - 1], sl = slopePerDay(pts);
+  // axe du temps : de la 1re pesée jusqu'à la date visée (sinon 2 mois après la dernière pesée)
+  const x0 = first.n, x1 = Math.max(byN && byN > last.n ? byN : last.n + 60, x0 + 30);
+  const ws = pts.map(p => p.w).concat(tgt ? [tgt] : []);
+  const lo = Math.floor(Math.min(...ws) - 0.5), hi = Math.ceil(Math.max(...ws) + 0.5);
+  const W = 340, H = 200, L = 30, T = 12, B = 22;
+  const X = n => L + (n - x0) / (x1 - x0) * (W - L - 8), Y = w => T + (hi - w) / Math.max(1, hi - lo) * (H - T - B);
+  const step = hi - lo > 8 ? 2 : 1;
+  const grid = [...Array(hi - lo + 1)].map((_, i) => lo + i).filter(v => (v - lo) % step === 0)
+    .map(v => `<line x1="${L}" x2="${W - 8}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--line)"/><text x="${L - 5}" y="${Y(v) + 3}" text-anchor="end" font-size="9" fill="var(--muted)">${v}</text>`).join('');
+  const xl = [x0, x1].map((n, i) => `<text x="${X(n)}" y="${H - 6}" text-anchor="${i ? 'end' : 'start'}" font-size="9" fill="var(--muted)">${new Intl.DateTimeFormat('fr-FR', { month: 'short', year: 'numeric' }).format(new Date(n * 864e5))}</text>`).join('');
+  const ideal = tgt && byN && byN > x0 ? `<line x1="${X(x0)}" y1="${Y(first.w)}" x2="${X(byN)}" y2="${Y(tgt)}" stroke="var(--f)" stroke-dasharray="5 5"/>
+    <circle cx="${X(byN)}" cy="${Y(tgt)}" r="4" fill="none" stroke="var(--f)" stroke-width="2"/><text x="${X(byN) - 6}" y="${Y(tgt) - 7}" text-anchor="end" font-size="9" fill="var(--f)">objectif ${nf1.format(tgt)} kg</text>` : '';
+  const proj = sl && x1 > last.n ? `<line x1="${X(last.n)}" y1="${Y(last.w)}" x2="${X(x1)}" y2="${Y(Math.min(hi, Math.max(lo, last.w + sl * (x1 - last.n))))}" stroke="var(--accent)" stroke-dasharray="2 4" stroke-width="2"/>` : '';
+  const line = pts.length > 1 ? `<polyline points="${pts.map(p => `${X(p.n).toFixed(1)},${Y(p.w).toFixed(1)}`).join(' ')}" fill="none" stroke="var(--accent)" stroke-width="2.4" stroke-linejoin="round"/>` : '';
+  const dots = pts.map((p, i) => `<circle cx="${X(p.n).toFixed(1)}" cy="${Y(p.w).toFixed(1)}" r="4.5" fill="var(--accent)"/>
+    <text x="${X(p.n).toFixed(1)}" y="${(Y(p.w) - 9).toFixed(1)}" text-anchor="${i ? 'middle' : 'start'}" font-size="9.5" font-weight="600" fill="var(--fg)">${nf1.format(p.w)}</text>`).join('');
+  const svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto" role="img" aria-label="Courbe de poids">${grid}${ideal}${proj}${line}${dots}${xl}</svg>`;
   // textes
-  const wkAgo = all.filter(p => p.n <= last.n - 7).pop();
-  const need = tgt && by ? (tgt - last.a) / Math.max(1, (dayN(by) - last.n) / 7) : null;
-  const sign = v => (v >= 0 ? '+' : '−') + nf2.format(Math.abs(v));
-  let proLine = '';
-  if (tgt && sl != null) {
-    const toGo = tgt - last.a;
-    if (Math.abs(toGo) < 0.2) proLine = '🎯 Tu es à ton objectif !';
-    else if (sl !== 0 && Math.sign(toGo) === Math.sign(sl)) { const eta = last.n + toGo / sl;
-      proLine = `À ce rythme : <b>${nf1.format(tgt)} kg vers le ${longDate(eta)}</b>${by ? (eta <= dayN(by) ? ' — dans les temps ✓' : ` — après ta date (${longDate(dayN(by))})`) : ''}`; }
-    else proLine = `Ton poids s'éloigne de l'objectif en ce moment.`;
-  }
-  openSheet(`${head('Ma courbe de poids')}${segR}${svg}
-    <p class="hint" style="font-size:13.5px;margin:0">Moyenne 7 jours : <b>${nf1.format(last.a)} kg</b>${wkAgo ? ` (${sign(last.a - wkAgo.a)} kg en 1 semaine)` : ''}</p>
-    <p class="hint" style="font-size:13.5px;margin:0">${wk == null ? 'Rythme : il faut au moins 3 pesées sur 7 jours.' : `Rythme actuel : <b>${sign(wk)} kg/sem</b>`}${need != null ? ` · visé : ${sign(need)} kg/sem` : ''}</p>
-    ${proLine ? `<p class="hint" style="font-size:13.5px;margin:0">${proLine}</p>` : ''}
-    <p class="hint">Points = pesées · ligne = moyenne sur 7 jours · pointillés bleus = projection sur 30 jours.</p>
-    <div class="tbl"><table class="wk"><thead><tr><th>Date</th><th>Poids</th><th>Moy. 7 j</th></tr></thead>
-      <tbody>${all.slice(-10).reverse().map(p => `<tr><td>${shortDate(p.n)}</td><td>${nf1.format(p.w)}</td><td>${nf1.format(p.a)}</td></tr>`).join('')}</tbody></table></div>`);
+  const sign = v => (v >= 0 ? '+' : '−') + nf1.format(Math.abs(v)), sign2 = v => (v >= 0 ? '+' : '−') + nf2.format(Math.abs(v));
+  const ago = now - last.n, weeks = (last.n - first.n) / 7;
+  const lines = [`Dernière pesée : <b>${nf1.format(last.w)} kg</b> le ${longDate(last.n)}${ago > 0 ? ` (il y a ${ago} jour${ago > 1 ? 's' : ''})` : ''}`];
+  if (pts.length > 1) lines.push(`Depuis ta 1re pesée : <b>${sign(last.w - first.w)} kg</b> en ${nf0.format(Math.max(1, Math.round(weeks)))} semaine${weeks >= 1.5 ? 's' : ''}${sl != null ? ` (${sign2(sl * 7)} kg/sem)` : ''}`);
+  if (tgt && byN && byN > now) lines.push(`Rythme visé : ${sign2((tgt - last.w) / ((byN - last.n) / 7))} kg/sem pour ${nf1.format(tgt)} kg le ${longDate(byN)}`);
+  if (tgt && sl) { const toGo = tgt - last.w;
+    if (Math.abs(toGo) < 0.3) lines.push('🎯 Tu es à ton objectif !');
+    else if (Math.sign(toGo) === Math.sign(sl)) { const eta = last.n + toGo / sl; lines.push(`À ce rythme : <b>${nf1.format(tgt)} kg vers le ${longDate(eta)}</b>${byN ? (eta <= byN ? ' — dans les temps ✓' : eta <= byN + 45 ? ' — un peu après ta date' : ' — trop lent pour ta date : mange un peu plus') : ''}`); }
+    else lines.push("Ton poids s'éloigne de l'objectif en ce moment."); }
+  if (pts.length === 1) lines.push('Ta courbe démarre : à ta prochaine pesée, l\'appli calculera ton rythme.');
+  openSheet(`${head('Ma courbe de poids')}${svg}
+    ${lines.map(l => `<p class="hint" style="font-size:13.5px;margin:0">${l}</p>`).join('')}
+    <p class="hint">Points bleus = tes pesées · ligne verte = chemin idéal vers ton objectif · pointillés bleus = si tu continues à ce rythme.</p>${tip}
+    <div class="tbl"><table class="wk"><thead><tr><th>Date</th><th>Poids</th><th>Écart</th></tr></thead>
+      <tbody>${pts.map((p, i) => `<tr><td>${longDate(p.n)}</td><td>${nf1.format(p.w)}</td><td>${i ? sign(p.w - pts[i - 1].w) : '—'}</td></tr>`).reverse().join('')}</tbody></table></div>`);
 }
 
 /* routine & recipe form */
@@ -1396,7 +1390,6 @@ document.addEventListener('click', ev => {
       };
       i.click(); break; }
     case 'wchart': openWeight(); break;
-    case 'wc-range': openWeight(+b.dataset.v); break;
     case 'finish': openFinish(); break;
     case 'fin-meal': S.ui.meal = b.dataset.meal; openFinish(); break;
     case 'fin-pick': { const i = S.ui.ideas[+b.dataset.i]; openPickList(S.ui.meal, 'Idée', i.items); break; }
